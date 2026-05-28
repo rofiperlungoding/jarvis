@@ -468,6 +468,18 @@ class DialogManager:
         # Replay history. The current (in-progress) turn is the last
         # entry in ``state.turns``; its assistant side is empty, so we
         # only emit a user message for it.
+        #
+        # Important: we deliberately omit past ``tool_calls`` from
+        # replayed assistant messages. Mistral's API requires every
+        # ``tool_calls`` entry to be paired with a matching ``tool``
+        # response message; we don't currently persist tool *results*
+        # in :class:`ConversationState`, so replaying the calls without
+        # the results trips HTTP 400 with
+        # ``"Not the same number of function calls and responses"``
+        # (error code 3230). The assistant's spoken / written reply
+        # already summarises what the tool did, so the LLM has enough
+        # context for the next turn — the raw tool-call payload is
+        # only useful for audit and never read back into the model.
         last_index = len(state.turns) - 1
         for idx, turn in enumerate(state.turns):
             user_msg: UserMessage = {"role": "user", "content": turn.user}
@@ -479,10 +491,6 @@ class DialogManager:
                 "role": "assistant",
                 "content": turn.assistant,
             }
-            if turn.tool_calls:
-                assistant_msg["tool_calls"] = [
-                    _tool_call_to_assistant(tc) for tc in turn.tool_calls
-                ]
             messages.append(assistant_msg)
 
         return messages

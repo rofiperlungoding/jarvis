@@ -5,6 +5,20 @@ All notable changes to JARVIS are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] — 2026-05-28
+
+### Fixed
+
+- **Critical**: Multi-turn conversations broke after the first tool
+  call. Cause: the message renderer replayed past `tool_calls` on
+  assistant messages without the matching `tool` response messages,
+  so Mistral rejected the second turn with HTTP 400 (error code 3230,
+  "Not the same number of function calls and responses"). The
+  assistant's prose reply already summarises what the tool did, so
+  we now omit the raw tool-call payload from history replay.
+  Visible symptom in 1.0.1: ask JARVIS to open Calculator → succeeds;
+  follow-up question → red error bubble.
+
 ## [1.0.1] — 2026-05-28
 
 ### Fixed

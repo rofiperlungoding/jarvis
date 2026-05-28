@@ -3,7 +3,7 @@
 ; components / tasks / install / finish.
 
 #define MyAppName "JARVIS"
-#define MyAppVersion "1.0.1"
+#define MyAppVersion "1.0.2"
 #define MyAppPublisher "JARVIS Project"
 #define MyAppURL "https://github.com/rofiperlungoding/jarvis"
 #define MyAppExeName "JARVIS.exe"
