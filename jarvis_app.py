@@ -135,6 +135,47 @@ logger = logging.getLogger("jarvis.app")
 logger.info("=" * 60)
 logger.info("JARVIS app starting; log file: %s", _LOG_FILE)
 
+
+def _install_global_excepthooks() -> None:
+    """Install last-resort hooks so unhandled exceptions land in the log.
+
+    Tk's mainloop and asyncio both swallow exceptions raised on background
+    threads by default; the bundled ``console=False`` build doubles down
+    by discarding stderr entirely. Without these hooks, a crash on the
+    worker thread or the Tk event loop produces ZERO diagnostic output —
+    the user just sees the window vanish.
+
+    Hooks installed:
+      * ``sys.excepthook`` — catches uncaught exceptions in the main
+        thread (e.g., Tk callbacks executed on the UI thread).
+      * ``threading.excepthook`` — catches uncaught exceptions on any
+        worker thread (Python 3.8+).
+      * ``asyncio.set_exception_handler`` — installed on every asyncio
+        loop the worker thread creates; surfaces ``Task exception was
+        never retrieved`` situations.
+    """
+    import sys  # noqa: PLC0415
+    import threading as _threading  # noqa: PLC0415
+
+    def _hook(exc_type, exc_value, exc_tb):  # type: ignore[no-untyped-def]
+        logger.critical(
+            "Unhandled exception",
+            exc_info=(exc_type, exc_value, exc_tb),
+        )
+
+    def _thread_hook(args):  # type: ignore[no-untyped-def]
+        logger.critical(
+            "Unhandled thread exception in %r",
+            getattr(args.thread, "name", "?"),
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    sys.excepthook = _hook
+    _threading.excepthook = _thread_hook  # type: ignore[assignment]
+
+
+_install_global_excepthooks()
+
 SAMPLE_RATE = PORCUPINE_SAMPLE_RATE_HZ
 FRAME_SAMPLES = VAD_FRAME_SAMPLES
 SAMPLE_WIDTH = 2

@@ -5,6 +5,22 @@ All notable changes to JARVIS are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] — 2026-05-28
+
+### Fixed
+
+- **Critical**: Bundled installer crashed silently the moment Piper TTS
+  tried to phonemize the first sentence. Root cause: the
+  ``piper/espeak-ng-data`` directory (espeak's phoneme dictionaries)
+  was missing from the PyInstaller bundle because PyInstaller's static
+  analysis can't see data-only directories. Now collected explicitly.
+- Added global ``sys.excepthook`` and ``threading.excepthook`` so
+  unhandled exceptions on background threads land in the log file
+  instead of being swallowed by the windowed PyInstaller bundle.
+- Extended ``hiddenimports`` for ``piper.config``, ``piper.const``,
+  ``piper.phoneme_ids``, ``piper.phonemize_espeak``,
+  ``piper.phonemize_chinese``, and ``piper.audio_playback``.
+
 ## [1.0.0] — 2026-05-28
 
 ### Added

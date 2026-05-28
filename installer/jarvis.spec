@@ -28,6 +28,32 @@ if PIPER_VOICE.is_dir():
     for f in PIPER_VOICE.glob("en_GB-alan-medium*"):
         datas.append((str(f), "piper_voices"))
 
+# Piper's phonemizer (espeakbridge.pyd) loads ``espeak-ng-data`` from a
+# directory next to the package. PyInstaller's static analysis can't see
+# the directory because it's data-only (no ``__init__.py``), so we
+# bundle every file in it manually. Without this, Piper segfaults the
+# first time it tries to phonemize a sentence — an unrecoverable native
+# crash that takes the whole process down with no Python traceback.
+import piper as _piper_module  # noqa: E402
+
+_piper_root = Path(_piper_module.__file__).parent
+_espeak_data_dir = _piper_root / "espeak-ng-data"
+if _espeak_data_dir.is_dir():
+    for f in _espeak_data_dir.rglob("*"):
+        if f.is_file():
+            rel = f.relative_to(_piper_root).parent
+            datas.append((str(f), str(Path("piper") / rel)))
+
+# Also bundle the libespeak / libtashkeel native libraries shipped next
+# to the espeakbridge if they exist (Piper looks them up via its loader
+# at first synthesis).
+for lib in _piper_root.glob("*.dll"):
+    datas.append((str(lib), "piper"))
+for lib in _piper_root.glob("*.dylib"):
+    datas.append((str(lib), "piper"))
+for lib in _piper_root.glob("*.so"):
+    datas.append((str(lib), "piper"))
+
 # chromadb has plugin-style submodules (telemetry providers, embedding
 # functions, etc.) that PyInstaller's static analysis can't see. Pull
 # every submodule + data file in.
@@ -98,6 +124,13 @@ a = Analysis(
         # Third-party hidden imports PyInstaller often misses
         "piper",
         "piper.voice",
+        "piper.config",
+        "piper.const",
+        "piper.phoneme_ids",
+        "piper.phonemize_espeak",
+        "piper.phonemize_chinese",
+        "piper.audio_playback",
+        "piper.download_voices",
         "faster_whisper",
         "ctranslate2",
         "sounddevice",
