@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jarvis"
-version = "1.0.2"
+version = "1.0.3"
 description = "JARVIS — an asynchronous, voice-first AI assistant powered by Mistral AI with an extensible Skill plugin system."
 readme = "README.md"
 requires-python = ">=3.11"

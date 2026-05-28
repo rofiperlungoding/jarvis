@@ -338,6 +338,34 @@ class DialogManager:
                 state=state,
                 loop_state=loop_state,
             )
+        except Exception:
+            # If the LLM loop crashed (rate limit, network, schema
+            # error, etc.) we still need to finalise the in-progress
+            # turn before re-raising. Otherwise ``state.turns`` keeps a
+            # dangling user-only Turn whose ``assistant`` is empty,
+            # which the next turn's ``_render_messages`` would emit as
+            # an invalid ``{role: assistant, content: ""}`` payload —
+            # and Mistral would reject the next request with HTTP 400
+            # / code 3240 ("Assistant message must have either content
+            # or tool_calls, but not none"). We seal the turn with the
+            # text accumulated so far (may be empty); the defensive
+            # skip in ``_render_messages`` then drops the empty-text
+            # turn from history without corrupting subsequent
+            # requests.
+            finished_at = self._time.now()
+            partial_text = "".join(loop_state.text_chunks)
+            try:
+                state.append_assistant(
+                    partial_text,
+                    at=finished_at,
+                    tool_calls=list(loop_state.all_tool_calls),
+                )
+            except Exception:  # pragma: no cover - defensive
+                logger.exception(
+                    "DialogManager: failed to finalise turn after error; "
+                    "conversation state may be inconsistent"
+                )
+            raise
         finally:
             # Always cancel any outstanding acknowledgement timer; we
             # don't want a stray "One moment, sir." after the turn is
@@ -480,12 +508,28 @@ class DialogManager:
         # already summarises what the tool did, so the LLM has enough
         # context for the next turn — the raw tool-call payload is
         # only useful for audit and never read back into the model.
+        #
+        # Defensive: also skip past assistant messages with empty
+        # ``content``. Mistral's API requires every assistant message
+        # to have either ``content`` or ``tool_calls`` (error code
+        # 3240, ``"Assistant message must have either content or
+        # tool_calls, but not none."``). Empty assistants exist in
+        # ``state.turns`` only when a previous turn died mid-stream
+        # (rate limit, network drop, etc.) before
+        # :meth:`append_assistant` ran. Emitting them re-uses the
+        # broken history and propagates the corruption forward.
         last_index = len(state.turns) - 1
         for idx, turn in enumerate(state.turns):
             user_msg: UserMessage = {"role": "user", "content": turn.user}
             messages.append(user_msg)
             if idx == last_index:
                 # Current turn — assistant side comes from the LLM next.
+                continue
+            if not turn.assistant.strip():
+                # Past turn that never got an assistant reply (e.g.,
+                # mid-turn exception). Skipping it preserves the user
+                # question in context without leaking an invalid
+                # empty-content assistant message into the request.
                 continue
             assistant_msg: AssistantMessage = {
                 "role": "assistant",

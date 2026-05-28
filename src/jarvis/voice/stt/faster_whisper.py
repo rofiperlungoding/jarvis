@@ -428,11 +428,36 @@ class FasterWhisperSTT(STTEngine):
         # strings, so we normalize "" to None here.
         whisper_language: str | None = language if language else None
 
+        # Quality tuning notes:
+        # * ``condition_on_previous_text=False`` — disables the prior-
+        #   context bias that frequently regenerates the previous reply
+        #   verbatim ("Thank you for watching", "Bye!" etc.) on a fresh
+        #   utterance, which was the dominant hallucination mode in
+        #   earlier builds.
+        # * ``vad_filter=True`` with ``min_silence_duration_ms=500`` —
+        #   strips Whisper-internal silence that otherwise gets glued
+        #   into a phantom segment with random text.
+        # * ``temperature=(0.0, 0.2, 0.4)`` — Whisper falls back through
+        #   higher temperatures on each repetition / log-prob failure.
+        #   Starting at 0 gives deterministic decoding for the common
+        #   case; the fallback rungs catch noisy-mic edge cases.
+        # * ``no_speech_threshold=0.6`` — Whisper's per-segment "this
+        #   is silence" gate. Raising from the 0.45 default suppresses
+        #   the "you" / "Thank you." silence false-positives.
+        # * ``log_prob_threshold=-1.0`` — accept lower-confidence
+        #   tokens; combined with the temperature ladder this avoids
+        #   the engine refusing perfectly fine speech because a single
+        #   token dipped below the default cutoff.
         segments_iter, info = self._model.transcribe(
             audio_array,
             language=whisper_language,
             beam_size=self._beam_size,
-            vad_filter=self._vad_filter,
+            vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": 500},
+            condition_on_previous_text=False,
+            temperature=(0.0, 0.2, 0.4),
+            no_speech_threshold=0.6,
+            log_prob_threshold=-1.0,
         )
 
         # ``segments_iter`` is a generator; materialise it once so we can

@@ -5,6 +5,41 @@ All notable changes to JARVIS are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] — 2026-05-28
+
+### Fixed
+
+- **Critical**: A turn that died mid-stream (Mistral rate limit,
+  network drop, etc.) left a dangling user-only Turn in
+  ``ConversationState`` whose assistant text was empty. The next
+  turn's history replay then emitted an invalid
+  ``{role: assistant, content: ""}`` payload, which Mistral rejects
+  with HTTP 400 / code 3240
+  (``"Assistant message must have either content or tool_calls,
+  but not none."``). Two layers of defence:
+  1. ``handle_turn`` now seals the turn with whatever text was
+     accumulated so far before re-raising, so state stays
+     consistent across errors.
+  2. ``_render_messages`` defensively skips past assistant
+     messages with empty content during replay, so even malformed
+     state from older builds doesn't corrupt subsequent requests.
+
+### Improved
+
+- **Speech-to-text quality**. Tuned ``faster-whisper`` decode
+  parameters to suppress the most common hallucination modes:
+  - ``condition_on_previous_text=False`` — stops the
+    "Thank you for watching" / "Bye!" regenerations on fresh
+    utterances.
+  - ``vad_filter=True`` with ``min_silence_duration_ms=500`` —
+    strips Whisper-internal silence segments.
+  - ``temperature=(0.0, 0.2, 0.4)`` — deterministic decode for
+    the common case, fallback rungs for noisy edge cases.
+  - ``no_speech_threshold=0.6`` — suppresses the
+    "you" / "Thank you." silence false-positives.
+  - ``log_prob_threshold=-1.0`` — accept lower-confidence tokens
+    when the temperature ladder needs them.
+
 ## [1.0.2] — 2026-05-28
 
 ### Fixed
