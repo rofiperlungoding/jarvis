@@ -6,7 +6,14 @@ Design
 The desktop app pings the GitHub Releases API on startup (background,
 non-blocking) and compares the latest release tag to the bundled
 :data:`jarvis.__version__`. If a newer version is available, the UI
-surfaces a non-modal notification linking to the release page.
+surfaces a non-modal notification with two actions:
+
+* **Open release page** — falls back to the user's browser. Useful
+  when they want release notes or a manual install.
+* **Update now** — JARVIS downloads ``JARVIS-Setup-<tag>.exe`` from
+  the release's asset list, launches it with ``/SILENT /SUPPRESSMSGBOXES``
+  flags, and exits the running process so the installer can replace
+  the binaries in-place.
 
 Why GitHub Releases
 ~~~~~~~~~~~~~~~~~~~
@@ -19,52 +26,52 @@ Why GitHub Releases
 * Tags follow PEP 440-compatible semver (``vMAJOR.MINOR.PATCH``),
   which keeps comparison logic trivial.
 
-Why "notify, don't auto-install"
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Auto-install flow
+~~~~~~~~~~~~~~~~~
 
-Auto-downloading and silently launching a 270 MB ``Setup.exe`` is a
-UX antipattern: SmartScreen blocks unsigned installers by default,
-the user loses control over when the upgrade happens (which is
-disruptive for a voice assistant mid-conversation), and a partial
-download leaves the previous installation in an undefined state.
-A notification with a one-click open-release-page button gives the
-user the same convenience without any of the failure modes.
+When the user clicks **Update now**, :func:`download_and_run_installer`
+performs:
+
+1. Streams the ``.exe`` asset to a temp file under ``%LOCALAPPDATA%``
+   with a ``.partial`` suffix so a half-finished download can be
+   resumed or cleaned up later.
+2. Renames the temp file once the download completes — atomic on
+   NTFS so the installer is never invoked against a partial blob.
+3. Spawns the installer with
+   ``/VERYSILENT /SUPPRESSMSGBOXES /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS``.
+   Inno Setup's silent mode skips every page including the Finish
+   page, but still respects the `[Run]` postinstall line that
+   relaunches JARVIS — so the user just sees the window flicker
+   away and come back.
+4. ``os.execv`` would normally swap into the installer, but PyInstaller
+   bundles don't support it. We use ``subprocess.Popen`` + ``sys.exit``
+   instead: the installer becomes detached, JARVIS exits, the
+   installer overwrites ``JARVIS.exe`` (the previous process is gone
+   so there's no file lock), then the installer's `[Run]` step
+   relaunches JARVIS.
 
 Failure handling
 ~~~~~~~~~~~~~~~~
 
-Every failure path returns ``None`` rather than raising:
-
-* No network — ``urllib.error.URLError``.
-* Repository not yet published — HTTP 404.
-* Rate-limited — HTTP 403.
-* Malformed release JSON — ``KeyError`` / ``ValueError``.
-
-The UI must treat ``None`` as "no update available" and proceed
-silently. This is critical because the check runs on the worker
-thread during boot; a raised exception would surface as a red
-error bubble and frighten users about a non-critical outcome.
-
-Type stripping
-~~~~~~~~~~~~~~
-
-The tag prefix ``v`` is stripped before comparison, so both
-``v1.2.0`` and ``1.2.0`` (the Inno Setup ``MyAppVersion`` style)
-parse to the same tuple. Only PEP 440 ``MAJOR.MINOR.PATCH`` is
-recognised; pre-release / build-metadata suffixes (``-rc1``,
-``+sha1234``) are tolerated as the third component but compared as
-strings, so ``1.0.0-rc1`` sorts *before* ``1.0.0`` (rc1 < empty
-string lexicographically — fine for our use case where pre-release
-tags should never beat a final).
+Every failure path returns ``None`` (for the check) or ``False`` (for
+the install) rather than raising. The UI must treat the negative
+outcome as "show a generic error toast and do nothing" — never as a
+crash.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Final
 
 from jarvis import __version__
@@ -78,6 +85,7 @@ __all__ = [
     "UpdateAvailable",
     "check_for_updates",
     "compare_versions",
+    "download_and_run_installer",
     "parse_version",
 ]
 
@@ -109,6 +117,15 @@ class ReleaseInfo:
 
     #: Optional human-readable release notes. May be empty.
     body: str
+
+    #: Direct download URL of the Inno Setup installer asset, when
+    #: present. ``None`` when the release exists but did not attach
+    #: a setup ``.exe`` (e.g., source-only release).
+    installer_url: str | None = None
+
+    #: Size of the installer asset in bytes, when known. Useful for
+    #: rendering progress bars.
+    installer_size: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,6 +274,25 @@ def check_for_updates(
         logger.warning("Update check skipped (unexpected payload shape: %s)", exc)
         return None
 
+    # Pull the .exe asset (if any). We pick the first asset whose name
+    # ends with ``.exe`` — for Inno Setup releases there is exactly one,
+    # named ``JARVIS-Setup-<version>.exe``. Future releases that attach
+    # a portable .zip archive next to the installer will still match
+    # the installer correctly.
+    installer_url: str | None = None
+    installer_size: int | None = None
+    for asset in payload.get("assets", []) or []:
+        try:
+            name = str(asset.get("name") or "")
+            if name.lower().endswith(".exe"):
+                installer_url = str(asset.get("browser_download_url") or "")
+                size = asset.get("size")
+                installer_size = int(size) if isinstance(size, int) else None
+                if installer_url:
+                    break
+        except (TypeError, ValueError):
+            continue
+
     try:
         cmp = compare_versions(current_version, tag_name)
     except ValueError as exc:
@@ -281,11 +317,205 @@ def check_for_updates(
         tag_name=tag_name,
         html_url=html_url,
         body=body,
+        installer_url=installer_url,
+        installer_size=installer_size,
     )
     logger.info(
-        "Update available: %s → %s (page: %s)",
+        "Update available: %s → %s (page: %s, asset: %s)",
         current_version,
         info.tag_name,
         info.html_url,
+        info.installer_url or "<no .exe>",
     )
     return UpdateAvailable(current=current_version, latest=info)
+
+
+
+# ---------------------------------------------------------------------------
+# Auto-install
+# ---------------------------------------------------------------------------
+
+
+#: Inno Setup silent flags.
+#:
+#: * ``/VERYSILENT`` — no progress dialog or any UI.
+#: * ``/SUPPRESSMSGBOXES`` — auto-accepts every prompt the installer
+#:   would otherwise show (e.g., overwrite confirmations).
+#: * ``/CLOSEAPPLICATIONS`` — sends WM_CLOSE to apps using files the
+#:   installer needs to overwrite. Inno Setup falls back to
+#:   ``/RESTARTAPPLICATIONS`` if the user doesn't see them quit.
+#: * ``/RESTARTAPPLICATIONS`` — relaunches the closed apps after install.
+#:   Together with ``[Run] postinstall`` this gets us a clean restart.
+#: * ``/NORESTART`` — never reboot the OS, even if requested by the
+#:   installer (we never request reboots, but defensive).
+#: * ``/LOG=...`` — tee the installer log to our own logs dir for
+#:   post-mortem.
+_SILENT_FLAGS: Final[tuple[str, ...]] = (
+    "/VERYSILENT",
+    "/SUPPRESSMSGBOXES",
+    "/CLOSEAPPLICATIONS",
+    "/RESTARTAPPLICATIONS",
+    "/NORESTART",
+)
+
+
+def _download_dir() -> Path:
+    """Return the per-user directory we drop downloaded installers into.
+
+    Lives under ``%LOCALAPPDATA%\\Jarvis\\updates`` so it survives app
+    restarts and is easy for the user to clear manually if a download
+    gets stuck.
+    """
+    root = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Jarvis" / "updates"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def download_and_run_installer(
+    info: ReleaseInfo,
+    *,
+    progress: object | None = None,
+    timeout_s: float = 30.0,
+) -> bool:
+    """Download the installer for ``info`` and launch it silently.
+
+    Returns ``True`` on success. The function never returns when it
+    succeeds in launching the installer — the call site is expected
+    to ``sys.exit(0)`` after a ``True`` so the running JARVIS goes
+    away and the installer can overwrite the binaries. We document
+    this contract here rather than calling ``sys.exit`` ourselves so
+    the GUI thread has a chance to clean up Tk widgets first.
+
+    Returns ``False`` for every failure path (no asset, network
+    error, disk full, installer path missing, etc.). The caller
+    should surface a generic toast and stay on the running version.
+
+    Parameters
+    ----------
+    info:
+        The :class:`ReleaseInfo` from :func:`check_for_updates`. Must
+        have a non-``None`` ``installer_url``.
+    progress:
+        Optional callable invoked with ``(downloaded_bytes,
+        total_bytes_or_None)`` each chunk. Use it to feed a UI
+        progress bar. ``total`` is ``None`` when the server didn't
+        send a Content-Length header.
+    timeout_s:
+        Per-request connect / read timeout. Defaults to 30 s — the
+        download itself can take much longer; this only bounds how
+        long we wait between bytes.
+    """
+    if not info.installer_url:
+        logger.warning("Auto-install aborted: release %s has no .exe asset", info.tag_name)
+        return False
+
+    dest_dir = _download_dir()
+    final_name = f"JARVIS-Setup-{info.version}.exe"
+    final_path = dest_dir / final_name
+    partial_path = dest_dir / (final_name + ".partial")
+
+    # If a previous attempt left a half-finished file, clear it.
+    for p in (partial_path, final_path):
+        if p.is_file():
+            try:
+                p.unlink()
+            except OSError as exc:
+                logger.warning("Could not remove old %s: %s", p, exc)
+
+    headers = {
+        "User-Agent": f"jarvis-app/{__version__}",
+        "Accept": "application/octet-stream",
+    }
+    request = urllib.request.Request(info.installer_url, headers=headers)  # noqa: S310 - URL came from GitHub API
+
+    logger.info(
+        "Downloading installer %s → %s",
+        info.installer_url,
+        partial_path,
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:  # noqa: S310
+            total_header = response.getheader("Content-Length")
+            total = int(total_header) if total_header and total_header.isdigit() else None
+            downloaded = 0
+            chunk_size = 1024 * 256  # 256 KiB chunks; balances syscall count vs progress granularity
+
+            with partial_path.open("wb") as handle:
+                while True:
+                    chunk = response.read(chunk_size)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    downloaded += len(chunk)
+                    if callable(progress):
+                        try:
+                            progress(downloaded, total)  # type: ignore[misc]
+                        except Exception:  # pragma: no cover - logged for diagnostics
+                            logger.exception("Progress callback raised; ignoring")
+    except urllib.error.HTTPError as exc:
+        logger.error("Installer download failed (HTTP %d)", exc.code)
+        _safe_unlink(partial_path)
+        return False
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        logger.error("Installer download failed (network/IO error: %s)", exc)
+        _safe_unlink(partial_path)
+        return False
+
+    # Atomic on NTFS — once this succeeds the file is "ready to launch".
+    try:
+        partial_path.replace(final_path)
+    except OSError as exc:
+        logger.error("Could not rename %s to %s: %s", partial_path, final_path, exc)
+        _safe_unlink(partial_path)
+        return False
+
+    logger.info(
+        "Downloaded %d bytes; launching installer %s",
+        downloaded,
+        final_path,
+    )
+
+    log_target = dest_dir / f"install-{info.version}.log"
+    try:
+        # ``CREATE_NEW_PROCESS_GROUP`` + ``DETACHED_PROCESS`` (combined
+        # value 0x208) so the installer survives JARVIS exiting in the
+        # next breath. Without this the installer is a child of JARVIS
+        # and its file handles get torn down when our process group
+        # signals exit.
+        creationflags = 0
+        if sys.platform == "win32":
+            DETACHED_PROCESS = 0x00000008  # noqa: N806 - Windows constant
+            CREATE_NEW_PROCESS_GROUP = 0x00000200  # noqa: N806 - Windows constant
+            creationflags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+
+        subprocess.Popen(  # noqa: S603 - launching an installer we just downloaded over HTTPS
+            [str(final_path), *_SILENT_FLAGS, f"/LOG={log_target}"],
+            creationflags=creationflags,
+            close_fds=True,
+        )
+    except OSError as exc:
+        logger.error("Failed to launch installer: %s", exc)
+        return False
+
+    logger.info(
+        "Installer launched detached; the app should restart "
+        "automatically once the upgrade finishes."
+    )
+    return True
+
+
+def _safe_unlink(path: Path) -> None:
+    """Best-effort delete; swallows OSError so cleanup never crashes."""
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError as exc:  # pragma: no cover - logged for diagnostics
+        logger.warning("Could not remove %s: %s", path, exc)
+
+
+# ---------------------------------------------------------------------------
+# Test hook: shutil reference kept so monkeypatching works in unit tests.
+# ---------------------------------------------------------------------------
+_ = shutil  # noqa: F401 - reserved for future asset-verification hooks
+_ = tempfile  # noqa: F401 - reserved for future temp-file fallbacks

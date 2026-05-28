@@ -5,6 +5,28 @@ All notable changes to JARVIS are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] — 2026-05-28
+
+### Added
+
+- **One-click in-app updates**. The "Update available" banner now
+  shows two buttons:
+  - **Update now** — JARVIS downloads the installer from the GitHub
+    release, launches it silently, and exits so the installer can
+    overwrite the binaries in place. The installer's postinstall
+    step relaunches JARVIS automatically; to the user it looks like
+    the window vanishes for a moment and comes back on the new
+    version. Progress is rendered in the banner.
+  - **Release page** — falls back to the browser. Useful if the
+    user wants release notes first.
+- New module ``jarvis.update_checker.download_and_run_installer``
+  handles the streaming download (with progress callback), atomic
+  rename to a final path, and detached silent launch with
+  ``/VERYSILENT /SUPPRESSMSGBOXES /CLOSEAPPLICATIONS
+  /RESTARTAPPLICATIONS /NORESTART``.
+- Installer logs now go to ``%LOCALAPPDATA%\Jarvis\updates\install-<version>.log``
+  for post-mortem when an upgrade misbehaves.
+
 ## [1.0.3] — 2026-05-28
 
 ### Fixed

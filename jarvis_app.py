@@ -985,17 +985,51 @@ class JarvisApp(ctk.CTk):
 
             webbrowser.open(url)
 
-        ctk.CTkButton(
-            banner,
-            text="Open release page",
-            command=_open,
-            width=160,
-            height=28,
-            fg_color=ACCENT,
-            hover_color=ACCENT_HOVER,
-            text_color="#000000",
-            font=("Segoe UI", 10, "bold"),
-        ).pack(side="right", padx=(4, 8), pady=8)
+        def _update_now() -> None:
+            self._begin_auto_update(payload)
+
+        # If the release ships an installer asset, offer one-click
+        # download + silent install. Otherwise fall back to the
+        # browser path (release page).
+        has_installer = bool(latest is not None and getattr(latest, "installer_url", None))
+        if has_installer:
+            ctk.CTkButton(
+                banner,
+                text="Update now",
+                command=_update_now,
+                width=110,
+                height=28,
+                fg_color=ACCENT,
+                hover_color=ACCENT_HOVER,
+                text_color="#000000",
+                font=("Segoe UI", 10, "bold"),
+            ).pack(side="right", padx=(4, 8), pady=8)
+
+            ctk.CTkButton(
+                banner,
+                text="Release page",
+                command=_open,
+                width=110,
+                height=28,
+                fg_color="transparent",
+                hover_color=PANEL_BG,
+                text_color=ACCENT,
+                border_width=1,
+                border_color=ACCENT,
+                font=("Segoe UI", 10),
+            ).pack(side="right", padx=(4, 4), pady=8)
+        else:
+            ctk.CTkButton(
+                banner,
+                text="Open release page",
+                command=_open,
+                width=160,
+                height=28,
+                fg_color=ACCENT,
+                hover_color=ACCENT_HOVER,
+                text_color="#000000",
+                font=("Segoe UI", 10, "bold"),
+            ).pack(side="right", padx=(4, 8), pady=8)
 
         def _dismiss() -> None:
             try:
@@ -1021,6 +1055,132 @@ class JarvisApp(ctk.CTk):
         # underlying page layout is unaffected.
         banner.place(relx=0.5, rely=0, y=12, anchor="n", relwidth=0.95)
         self._update_banner = banner
+
+    def _begin_auto_update(self, payload: Any) -> None:
+        """Kick off the download → silent-install → exit flow.
+
+        Runs the heavy network work on a daemon thread so the UI
+        stays responsive. Posts ``("update_progress", (downloaded,
+        total))`` and ``("update_done", ok)`` events through
+        ``UI_QUEUE`` so the banner can render a progress bar and
+        the eventual success / failure outcome.
+        """
+        latest = getattr(payload, "latest", None)
+        if latest is None or not getattr(latest, "installer_url", None):
+            self.show_toast("No installer asset for this release")
+            return
+
+        # Replace banner contents with a progress label.
+        self._render_update_progress("Starting download…")
+
+        def _runner() -> None:
+            try:
+                from jarvis.update_checker import (  # noqa: PLC0415
+                    download_and_run_installer,
+                )
+
+                def _progress(downloaded: int, total: int | None) -> None:
+                    if total:
+                        pct = downloaded * 100 // total
+                        post_ui("update_progress", (downloaded, total, pct))
+                    else:
+                        post_ui("update_progress", (downloaded, None, None))
+
+                ok = download_and_run_installer(latest, progress=_progress)
+                post_ui("update_done", ok)
+            except Exception as exc:  # pragma: no cover - logged for diagnostics
+                logger.exception("Auto-update thread crashed: %s", exc)
+                post_ui("update_done", False)
+
+        threading.Thread(target=_runner, name="jarvis-auto-update", daemon=True).start()
+
+    def _render_update_progress(self, message: str) -> None:
+        """Replace the banner contents with a progress readout."""
+        if self._update_banner is None:
+            return
+        for child in self._update_banner.winfo_children():
+            try:
+                child.destroy()
+            except Exception:
+                pass
+        ctk.CTkLabel(
+            self._update_banner,
+            text=f"  ⬆  {message}",
+            font=("Segoe UI", 12, "bold"),
+            text_color=ACCENT,
+            anchor="w",
+        ).pack(side="left", padx=12, pady=8, fill="x", expand=True)
+
+    def _on_update_progress(self, payload: Any) -> None:
+        """Update the banner with download progress.
+
+        ``payload`` is ``(downloaded_bytes, total_bytes_or_None,
+        percent_or_None)``. We render either ``"Downloading 47%
+        (123 / 270 MB)"`` or ``"Downloading… 123 MB"`` depending on
+        whether the server gave us a Content-Length.
+        """
+        try:
+            downloaded, total, pct = payload
+        except (TypeError, ValueError):
+            return
+        downloaded_mb = max(0, int(downloaded)) / (1024 * 1024)
+        if total:
+            total_mb = int(total) / (1024 * 1024)
+            self._render_update_progress(
+                f"Downloading {pct}%  ({downloaded_mb:.1f} / {total_mb:.1f} MB)"
+            )
+        else:
+            self._render_update_progress(f"Downloading… {downloaded_mb:.1f} MB")
+
+    def _on_update_done(self, ok: bool) -> None:
+        """Final outcome of the auto-install attempt.
+
+        On success the installer is already detached and running
+        silently; we exit the app so it can replace JARVIS.exe in
+        place. The installer's `[Run]` postinstall step will
+        relaunch JARVIS once the upgrade finishes — to the user it
+        looks like the window vanishes for a moment and comes back.
+
+        On failure we leave the banner showing a "Couldn't update"
+        toast and keep running on the current version.
+        """
+        if ok:
+            self._render_update_progress("Installing in the background — JARVIS will restart shortly")
+            # Give Tk a beat to render the message and the installer
+            # a beat to take a file lock, then exit cleanly.
+            self.after(1500, self._exit_for_update)
+        else:
+            self.show_toast("Couldn't auto-update. Try the release page.")
+            # Restore the original banner so the user can retry.
+            if self._update_banner is not None:
+                try:
+                    self._update_banner.destroy()
+                except Exception:
+                    pass
+                self._update_banner = None
+
+    def _exit_for_update(self) -> None:
+        """Clean shutdown of UI + worker so the installer can take over."""
+        try:
+            if self.ptt_recorder is not None:
+                self.ptt_recorder.stop()
+        except Exception:
+            pass
+        try:
+            self.pages["chat"].stop_vad()
+        except Exception:
+            pass
+        try:
+            WORK_QUEUE.put(None)
+        except Exception:
+            pass
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        # Hard-exit so any lingering daemon thread doesn't keep the
+        # process alive and block the installer.
+        os._exit(0)
 
     # ----------------------------------------------------------------- ptt
     def _space_press(self, _e: Any) -> None:
@@ -1060,6 +1220,10 @@ class JarvisApp(ctk.CTk):
                     self.show_toast(str(payload))
                 elif kind == "update_available":
                     self._show_update_banner(payload)
+                elif kind == "update_progress":
+                    self._on_update_progress(payload)
+                elif kind == "update_done":
+                    self._on_update_done(bool(payload))
                 elif kind == "error":
                     self.set_status(f"Error: {payload}", ERROR, ERROR)
         except queue.Empty:
