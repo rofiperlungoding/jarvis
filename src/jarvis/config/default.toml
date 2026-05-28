@@ -1,0 +1,187 @@
+# config.toml — shipped defaults; user overrides merged on top.
+#
+# This file is bundled with the JARVIS package and acts as the baseline
+# configuration. The TOML loader at ``src/jarvis/config/__init__.py``
+# loads this file first, then deep-merges the user override at
+# ``%APPDATA%/Jarvis/config.toml`` (or the explicit path supplied to
+# ``load_config``) on top of it.
+#
+# Comments here intentionally cite the requirement IDs they enforce so a
+# reader who edits the user override knows what guardrail they are about
+# to relax.
+#
+# Secrets (API keys, OAuth tokens) are NOT placed in this file — they
+# live in the DPAPI-backed Credential_Store and are referenced by the
+# ``*_credential`` fields below.
+
+[app]
+data_dir = "%LOCALAPPDATA%/Jarvis"
+plugin_dirs = ["%APPDATA%/Jarvis/plugins"]
+log_level = "INFO"
+incognito = false                          # Requirement 13.3
+
+[voice.wake_word]
+engine = "porcupine"
+phrase = "jarvis"                          # built-in keyword
+custom_keyword_path = ""                   # absolute path to .ppn (Requirement 18.1)
+sensitivity = 0.55
+access_key_credential = "porcupine/access_key"
+
+[voice.audio]
+input_device = ""                          # empty = system default mic
+output_device = ""                         # empty = system default speakers
+sample_rate_hz = 16000
+frame_ms = 30
+
+[voice.vad]
+engine = "silero"
+trailing_silence_ms = 700                  # Requirement 1.3
+speech_start_threshold = 0.5
+
+[voice.stt]
+engine = "faster_whisper"                  # or "cloud" (blocked when local_only=true)
+model = "small.en"
+device = "cpu"                             # or "cuda"
+compute_type = "int8"
+language = "en"
+min_confidence = 0.4                       # Requirement 1.8
+local_only = true                          # Requirement 13.2 enforcement
+
+[voice.tts]
+engine = "piper"                           # or "elevenlabs", "openai"
+voice = "en_GB-alan-medium"                # Requirement 11.2 default
+speaking_rate = 1.0
+barge_in_enabled = true                    # Requirement 1.7
+
+[dialog]
+persona_profile = "jarvis_default"
+# honorific = "sir"                        # Requirement 11.1; omit/null to inherit from persona
+acknowledge_after_ms = 1500                # Requirement 12.3
+max_tool_retry = 2                         # Requirement 14.5
+
+[llm.mistral]
+endpoint = "https://api.mistral.ai"        # Requirement 19.1
+model = "mistral-large-latest"             # Requirement 19.2
+api_key_credential = "mistral/api_key"     # Requirement 19.3
+request_timeout_ms = 3000                  # Requirement 12.4 trigger
+max_retries = 3                            # Requirement 19.8
+retry_backoff_initial_ms = 200
+streaming = true                           # Requirement 19.5
+
+[llm.fallback]
+enabled = true
+backend = "ollama"
+endpoint = "http://localhost:11434"
+model = "mistral"
+circuit_open_seconds = 30
+
+[memory]
+backend = "chroma"
+path = "${app.data_dir}/memory/chroma"
+embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
+top_k = 5                                  # Requirement 10.3
+encrypt_at_rest = true                     # Requirement 10.7
+encrypt_embeddings = false
+redaction_enabled = true                   # Requirement 10.8
+pii_patterns = [
+  "\\b[\\w.+-]+@[\\w-]+\\.[\\w.-]+\\b",
+  "\\b\\d{3}[- ]?\\d{3}[- ]?\\d{4}\\b",
+]
+
+[reminders]
+db_path = "${app.data_dir}/reminders.sqlite"
+toast_enabled = true
+on_start_grace_seconds = 30                # Requirement 6.6 floor
+
+[skills]
+registry_meta_schema = "draft-07"
+mcp_servers = []                           # list of {name, command, args, env}
+
+[automation.application_registry]
+chrome = "C:/Program Files/Google/Chrome/Application/chrome.exe"
+vscode = "C:/Users/%USERNAME%/AppData/Local/Programs/Microsoft VS Code/Code.exe"
+spotify = "spotify:"
+calculator = "calc.exe"
+calc = "calc.exe"
+notepad = "notepad.exe"
+explorer = "explorer.exe"
+"file explorer" = "explorer.exe"
+"task manager" = "taskmgr.exe"
+cmd = "cmd.exe"
+powershell = "powershell.exe"
+paint = "mspaint.exe"
+"snipping tool" = "snippingtool.exe"
+edge = "msedge.exe"
+"microsoft edge" = "msedge.exe"
+firefox = "firefox.exe"
+discord = "discord:"
+youtube = "https://youtube.com"
+gmail = "https://mail.google.com"
+github = "https://github.com"
+settings = "ms-settings:"
+# user-defined entries are merged on top in the user override file.
+
+[automation.allowed_directories]
+paths = ["%USERPROFILE%/Documents", "%USERPROFILE%/Downloads"]
+
+[automation.script_catalog]
+# id -> { interpreter, path, description }
+# example:
+# my_backup = { interpreter = "powershell", path = "C:/scripts/backup.ps1", description = "Daily backup" }
+
+[providers.weather]
+provider = "openweather"
+api_key_credential = "weather/api_key"
+default_location = "Bandung,ID"
+timeout_seconds = 5                        # Requirement 7.7
+
+[providers.news]
+provider = "newsapi"
+api_key_credential = "news/api_key"
+default_topic = "technology"
+timeout_seconds = 5
+
+[providers.calendar]
+provider = "google"
+oauth_credential = "calendar/oauth_token"
+timeout_seconds = 5
+
+[providers.email]
+provider = "smtp"
+host = "smtp.example.com"
+port = 587
+username_credential = "email/smtp_user"
+password_credential = "email/smtp_password"
+
+[providers.search]
+provider = "tavily"                        # or "bing", "duckduckgo"
+api_key_credential = "search/api_key"
+max_results_default = 5                    # Requirement 3.1
+max_results_cap = 10
+
+[authorization]
+trusted_action_allowlist = []              # list of {skill, args_subset}
+destructive_skills = [
+  "SendEmailSkill",
+  "SendMessageSkill",
+  "RunScriptSkill",
+  "MemoryAdminSkill.forget",
+]
+destructive_operations = [
+  { skill = "CalendarSkill", op_field = "operation", op_values = ["create_event"] },
+]
+
+[security]
+audit_log_path = "${app.data_dir}/audit.sqlite"
+network_destination_allowlist = [
+  "api.mistral.ai",
+  "api.openweathermap.org",
+  "newsapi.org",
+  "www.googleapis.com",
+  "smtp.example.com",
+  "localhost",
+]
+
+[telemetry]
+enabled = false
+crash_report_endpoint = ""

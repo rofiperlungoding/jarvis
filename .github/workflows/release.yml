@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+jobs:
+  build-installer:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pyinstaller pillow customtkinter sounddevice piper-tts faster-whisper silero-vad pvporcupine sentence-transformers win10toast wmi pycaw pyautogui pywinauto
+
+      - name: Pre-cache Piper voice
+        run: |
+          mkdir -p "$env:USERPROFILE\.cache\jarvis\piper"
+          python -c "from piper.download_voices import download_voice; from pathlib import Path; download_voice('en_GB-alan-medium', Path.home() / '.cache' / 'jarvis' / 'piper')"
+
+      - name: Generate icon and banners
+        run: |
+          python installer/generate_icon.py
+          python installer/generate_banners.py
+
+      - name: Build PyInstaller bundle
+        run: pyinstaller --noconfirm --clean installer/jarvis.spec
+
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup --no-progress -y
+
+      - name: Compile installer
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer/jarvis_setup.iss
+
+      - name: Locate installer
+        id: find
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem installer/output -Filter "JARVIS-Setup-*.exe" | Select-Object -First 1
+          echo "path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+          echo "size=$([math]::Round($installer.Length / 1MB, 1)) MB" >> $env:GITHUB_OUTPUT
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-installer
+          path: installer/output/JARVIS-Setup-*.exe
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: JARVIS ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          files: |
+            installer/output/JARVIS-Setup-*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

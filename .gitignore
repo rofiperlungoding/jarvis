@@ -1,0 +1,67 @@
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# Distribution / packaging
+*.egg-info/
+*.egg
+.installed.cfg
+
+# ---------------------------------------------------------------------------
+# Testing / linting / typing caches
+# ---------------------------------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+htmlcov/
+coverage.xml
+.tox/
+
+# ---------------------------------------------------------------------------
+# Editors / IDEs
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---------------------------------------------------------------------------
+# Build artefacts
+# ---------------------------------------------------------------------------
+build/
+dist/
+*.exe
+installer/output/
+*.bak
+
+# ---------------------------------------------------------------------------
+# Logs and ad-hoc scratch files
+# ---------------------------------------------------------------------------
+_*.log
+*.log
+.DS_Store
+Thumbs.db
+
+# ---------------------------------------------------------------------------
+# Project-local data (DPAPI secrets, audit DBs, vector store, log rotations)
+# These live under %LOCALAPPDATA% by default but can shadow into the repo
+# during dev runs with a custom data_dir.
+# ---------------------------------------------------------------------------
+data/
+*.sqlite
+*.sqlite-*
+secrets/

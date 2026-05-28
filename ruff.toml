@@ -1,0 +1,82 @@
+# Ruff configuration for JARVIS AI Assistant.
+# Linter + formatter sibling to Black; line length kept in lockstep with Black.
+# Targets Python 3.11+ as declared in pyproject.toml (task 1.1).
+
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+# Files / directories to ignore.
+extend-exclude = [
+    ".venv",
+    "build",
+    "dist",
+    "docs/_build",
+    "**/__pycache__",
+]
+
+[lint]
+# A pragmatic baseline rule selection. We deliberately stay strict on bugs and
+# imports, slightly lighter on style (Black owns formatting), and lean on the
+# documented Mistral-compatible JSON Schema subset rather than bespoke rules.
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort (import ordering)
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "ASYNC",# flake8-async (we are an asyncio app)
+    "RUF",  # ruff-specific rules
+    "N",    # pep8-naming
+    "PL",   # pylint subset
+    "TID",  # tidy-imports
+]
+ignore = [
+    # Black handles wrapping; avoid double-policing line length here.
+    "E501",
+    # Allow `Optional[X]` and `Union` style alongside `X | None` until the
+    # codebase settles on one form during 1.x.
+    "UP007",
+    # We use lots of constants / magic numbers in audio frame sizes etc.
+    "PLR2004",
+    # Function-arg count limit too tight for DialogManager-style wiring.
+    "PLR0913",
+]
+
+# Auto-fix safe rules; `ruff --fix` should remain side-effect free.
+fixable = ["ALL"]
+unfixable = []
+
+[lint.per-file-ignores]
+# Tests can use asserts, fixtures with redefinitions, and longer files.
+"tests/**/*.py" = [
+    "S101",     # asserts are fine in tests
+    "PLR0915",  # tests can be long
+    "PLR0912",  # ditto branches
+    "N802",     # test names may use camelCase to mirror APIs
+]
+# Generated / vendored stubs (if any) are exempt.
+"src/jarvis/_vendor/**/*.py" = ["ALL"]
+# CJK fullwidth sentence terminators (。？！…) are intentional Unicode and
+# appear in both code and docstrings; their visual ambiguity is exactly the
+# behaviour the SentenceAccumulator implements.
+"src/jarvis/voice/tts/base.py" = ["RUF001", "RUF002"]
+
+[lint.isort]
+known-first-party = ["jarvis"]
+combine-as-imports = true
+force-sort-within-sections = true
+
+[lint.pydocstyle]
+convention = "google"
+
+[format]
+# Keep ruff-format aligned with Black so pre-commit black step is the single
+# source of truth for formatting; ruff format is opt-in for editors.
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+skip-magic-trailing-comma = false

@@ -1,0 +1,65 @@
+# Pre-commit configuration for JARVIS AI Assistant.
+# Runs ruff (lint), black (format), and mypy (type check) on src/ and tests/.
+#
+# Black is configured here via CLI args (--line-length=100) so this file is
+# self-contained and does not require a [tool.black] section in pyproject.toml.
+# When pyproject.toml gains a [tool.black] section in a later step, Black will
+# happily honor either source; the CLI flag wins on ties.
+#
+# Install hooks with:    pre-commit install
+# Run on the full tree:  pre-commit run --all-files
+
+default_language_version:
+  python: python3.11
+
+# Limit hooks to the project's source and test trees so generated files,
+# vendor blobs, and docs builds don't trip the formatters/linters.
+files: ^(src|tests)/.*\.py$
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        name: ruff (lint)
+        args: ["--fix", "--exit-non-zero-on-fix"]
+        types_or: [python, pyi]
+
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+        name: black (format, line-length=100)
+        args: ["--line-length=100", "--target-version=py311"]
+        types_or: [python, pyi]
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.11.2
+    hooks:
+      - id: mypy
+        name: mypy (type check)
+        # Pin a small set of typed deps so the hook env can resolve project
+        # imports for cross-module checks. Heavy native libs are covered by
+        # ignore_missing_imports in mypy.ini.
+        additional_dependencies:
+          - "pydantic>=2"
+          - "types-python-dateutil"
+        args: ["--config-file=mypy.ini"]
+        # mypy hook receives changed files; restrict to project dirs and
+        # ensure src/ and tests/ are both scanned together for cross-refs.
+        pass_filenames: false
+        entry: mypy --config-file=mypy.ini src tests
+
+  # Lightweight hygiene checks — cheap, catch real issues, language-agnostic.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
